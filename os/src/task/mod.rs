@@ -14,7 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use core::cell::RefMut;
+
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MemorySet;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -120,6 +123,13 @@ impl TaskManager {
         inner.tasks[inner.current_task].get_user_token()
     }
 
+    fn get_current_mem_set(&self) -> RefMut<'_, MemorySet> {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        RefMut::map(inner, |inner| inner.tasks[current].get_mem_set())
+    }
+
     /// Get the current 'Running' task's trap contexts.
     fn get_current_trap_cx(&self) -> &'static mut TrapContext {
         let inner = self.inner.exclusive_access();
@@ -152,6 +162,20 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn record_syscall(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        inner.tasks[current].syscall_times[id] += 1;
+    }
+
+    fn syscall_times(&self, id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        inner.tasks[current].syscall_times[id]
     }
 }
 
@@ -198,7 +222,22 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
 }
 
+/// Get the current 'Running' task's memory set.
+pub fn current_mem_set() -> RefMut<'static, MemorySet> {
+    TASK_MANAGER.get_current_mem_set()
+}
+
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Record the number of times the current task calls the syscall with `id`.
+pub fn record_syscall(id: usize) {
+    TASK_MANAGER.record_syscall(id)
+}
+
+/// Return the number of times the current task calls the syscall with `id`.
+pub fn syscall_times(id: usize) -> usize {
+    TASK_MANAGER.syscall_times(id)
 }
