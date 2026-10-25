@@ -68,7 +68,7 @@ impl SuperBlock {
     }
 }
 /// Type of a disk inode
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum DiskInodeType {
     File,
     Directory,
@@ -80,6 +80,7 @@ type IndirectBlock = [u32; BLOCK_SZ / 4];
 type DataBlock = [u8; BLOCK_SZ];
 /// A disk inode
 #[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct DiskInode {
     pub size: u32,
     pub direct: [u32; INODE_DIRECT_COUNT],
@@ -117,7 +118,7 @@ impl DiskInode {
     /// Return number of blocks needed include indirect1/2.
     pub fn total_blocks(size: u32) -> u32 {
         let data_blocks = Self::_data_blocks(size) as usize;
-        let mut total = data_blocks as usize;
+        let mut total = data_blocks;
         // indirect1
         if data_blocks > INODE_DIRECT_COUNT {
             total += 1;
@@ -233,6 +234,59 @@ impl DiskInode {
                     }
                 }
             });
+    }
+    /// Decrease the size of current disk inode
+    pub fn decrease_size(
+        &mut self,
+        new_size: u32,
+        block_device: &Arc<dyn BlockDevice>,
+    ) -> Vec<u32> {
+        let mut released = Vec::new();
+        let total_blocks = self.data_blocks() as usize;
+        self.size = new_size;
+        let current_blocks = self.data_blocks() as usize;
+
+        for index in (current_blocks..total_blocks).rev() {
+            if index < DIRECT_BOUND {
+                released.push(core::mem::take(&mut self.direct[index]));
+            } else if index < INDIRECT1_BOUND {
+                let offset = index - DIRECT_BOUND;
+
+                get_block_cache(self.indirect1 as usize, Arc::clone(block_device))
+                    .lock()
+                    .modify(0, |indirect1: &mut IndirectBlock| {
+                        released.push(core::mem::take(&mut indirect1[offset]));
+                    });
+
+                if offset == 0 {
+                    released.push(core::mem::take(&mut self.indirect1));
+                }
+            } else {
+                let offset = index - INDIRECT1_BOUND;
+
+                let outer = offset / INODE_INDIRECT1_COUNT;
+                let inner = offset % INODE_INDIRECT1_COUNT;
+
+                get_block_cache(self.indirect2 as usize, Arc::clone(block_device))
+                    .lock()
+                    .modify(0, |indirect2: &mut IndirectBlock| {
+                        get_block_cache(indirect2[outer] as usize, Arc::clone(block_device))
+                            .lock()
+                            .modify(0, |indirect1: &mut IndirectBlock| {
+                                released.push(core::mem::take(&mut indirect1[inner]));
+                            });
+
+                        if inner == 0 {
+                            released.push(core::mem::take(&mut indirect2[outer]));
+                        }
+                    });
+
+                if offset == 0 {
+                    released.push(core::mem::take(&mut self.indirect2));
+                }
+            }
+        }
+        released
     }
 
     /// Clear size to zero and return blocks that should be deallocated.
@@ -386,6 +440,10 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+    /// Return file count
+    pub fn file_count(&self) -> usize {
+        (self.size as usize) / DIRENT_SZ
     }
 }
 /// A directory entry

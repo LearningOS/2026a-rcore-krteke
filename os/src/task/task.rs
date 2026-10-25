@@ -1,7 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{BIG_STRIDE, DEFAULT_PRIORITY, TRAP_CONTEXT_BASE};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
@@ -38,7 +38,26 @@ impl TaskControlBlock {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Scheduling {
+    pub stride: usize,
+    pub pass: usize,
+    pub priority: usize,
+}
+
+impl Default for Scheduling {
+    fn default() -> Self {
+        Self {
+            stride: 0,
+            pass: BIG_STRIDE / DEFAULT_PRIORITY,
+            priority: DEFAULT_PRIORITY,
+        }
+    }
+}
+
 pub struct TaskControlBlockInner {
+    pub scheduling: Scheduling,
+
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
 
@@ -117,6 +136,7 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    scheduling: Scheduling::default(),
                     trap_cx_ppn,
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -148,6 +168,68 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
         task_control_block
+    }
+
+    /// spawn a child process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        // memory_set with elf program headers/trampoline/trap context/user stack
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        let fd_table = parent_inner.fd_table.clone();
+        // push a task context which goes to trap_return to the top of kernel stack
+        let task_control_block = Arc::new(Self {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    scheduling: Scheduling::default(),
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    fd_table,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                })
+            },
+        });
+        parent_inner.children.push(task_control_block.clone());
+        // prepare TrapContext in user space
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
+        task_control_block
+    }
+
+    /// get the memory set
+    pub fn get_current_mem_set(&self) -> RefMut<'_, MemorySet> {
+        RefMut::map(self.inner_exclusive_access(), |m| &mut m.memory_set)
+    }
+
+    /// set the priority
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.scheduling.priority = prio;
+        inner.scheduling.pass = BIG_STRIDE / inner.scheduling.priority;
     }
 
     /// Load a new elf to replace the original application address space and start execution
@@ -205,6 +287,7 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    scheduling: Scheduling::default(),
                     trap_cx_ppn,
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
