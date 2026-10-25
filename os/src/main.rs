@@ -23,6 +23,8 @@
 #![no_main]
 #![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
+#![feature(let_chains)]
+#![allow(clippy::result_unit_err)]
 
 #[macro_use]
 extern crate bitflags;

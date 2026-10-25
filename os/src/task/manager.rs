@@ -5,11 +5,11 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use lazy_static::*;
 ///A array of `TaskControlBlock` that is thread-safe
+#[derive(Default)]
 pub struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
 }
 
-/// A simple FIFO scheduler.
 impl TaskManager {
     ///Creat an empty TaskManager
     pub fn new() -> Self {
@@ -23,7 +23,24 @@ impl TaskManager {
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let index = self
+            .ready_queue
+            .iter()
+            .enumerate()
+            .min_by(|(_, x), (_, y)| {
+                x.inner_exclusive_access()
+                    .scheduling
+                    .stride
+                    .cmp(&y.inner_exclusive_access().scheduling.stride)
+            })
+            .map(|(i, _)| i);
+
+        index.and_then(|index| {
+            self.ready_queue.swap_remove_front(index).inspect(|task| {
+                let mut inner = task.inner_exclusive_access();
+                inner.scheduling.stride += inner.scheduling.pass;
+            })
+        })
     }
 }
 
