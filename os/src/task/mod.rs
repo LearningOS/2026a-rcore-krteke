@@ -33,8 +33,8 @@ pub use context::TaskContext;
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle, IDLE_PID};
 pub use manager::{add_task, pid2process, remove_from_pid2process, remove_task, wakeup_task};
 pub use processor::{
-    current_kstack_top, current_process, current_task, current_trap_cx, current_trap_cx_user_va,
-    current_user_token, run_tasks, schedule, take_current_task,
+    current_kstack_top, current_process, current_task, current_tid, current_trap_cx,
+    current_trap_cx_user_va, current_user_token, run_tasks, schedule, take_current_task,
 };
 pub use signal::SignalFlags;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -55,7 +55,7 @@ pub fn suspend_current_and_run_next() {
     // push back to ready queue.
     add_task(task);
     // jump to scheduling cycle
-    schedule(task_cx_ptr);
+    unsafe { schedule(task_cx_ptr) };
 }
 
 /// Make current task blocked and switch to the next task.
@@ -65,7 +65,7 @@ pub fn block_current_and_run_next() {
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
     task_inner.task_status = TaskStatus::Blocked;
     drop(task_inner);
-    schedule(task_cx_ptr);
+    unsafe { schedule(task_cx_ptr) };
 }
 
 use crate::board::QEMUExit;
@@ -140,7 +140,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             // are limited in a single process. Therefore, the blocked tasks are
             // removed when the PCB is deallocated.
             trace!("kernel: exit_current_and_run_next .. remove_inactive_task");
-            remove_inactive_task(Arc::clone(&task));
+            remove_inactive_task(Arc::clone(task));
             let mut task_inner = task.inner_exclusive_access();
             if let Some(res) = task_inner.res.take() {
                 recycle_res.push(res);
@@ -164,7 +164,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     drop(process);
     // we do not have to save task context
     let mut _unused = TaskContext::zero_init();
-    schedule(&mut _unused as *mut _);
+    unsafe { schedule(&mut _unused as *mut _) };
 }
 
 lazy_static! {

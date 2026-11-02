@@ -30,15 +30,22 @@ impl Semaphore {
     }
 
     /// up operation of semaphore
-    pub fn up(&self) {
+    ///
+    /// Returns the task woken by this operation, if any.
+    pub fn up(&self) -> Option<Arc<TaskControlBlock>> {
         trace!("kernel: Semaphore::up");
         let mut inner = self.inner.exclusive_access();
         inner.count += 1;
-        if inner.count <= 0 {
-            if let Some(task) = inner.wait_queue.pop_front() {
-                wakeup_task(task);
-            }
+        let woken = if inner.count <= 0 {
+            inner.wait_queue.pop_front()
+        } else {
+            None
+        };
+        drop(inner);
+        if let Some(task) = &woken {
+            wakeup_task(Arc::clone(task));
         }
+        woken
     }
 
     /// down operation of semaphore

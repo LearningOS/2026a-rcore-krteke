@@ -33,13 +33,15 @@ impl Pipe {
 
 const RING_BUFFER_SIZE: usize = 32;
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Default)]
 enum RingBufferStatus {
     Full,
+    #[default]
     Empty,
     Normal,
 }
 
+#[derive(Default)]
 pub struct PipeRingBuffer {
     arr: [u8; RING_BUFFER_SIZE],
     head: usize,

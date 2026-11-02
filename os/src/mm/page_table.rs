@@ -7,6 +7,7 @@ use bitflags::*;
 
 bitflags! {
     /// page table entry flags
+    #[derive(PartialEq, Eq)]
     pub struct PTEFlags: u8 {
         const V = 1 << 0;
         const R = 1 << 1;
@@ -31,7 +32,7 @@ impl PageTableEntry {
     /// Create a new page table entry
     pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
         PageTableEntry {
-            bits: ppn.0 << 10 | flags.bits as usize,
+            bits: ppn.0 << 10 | flags.bits() as usize,
         }
     }
     /// Create an empty page table entry
@@ -68,6 +69,12 @@ impl PageTableEntry {
 pub struct PageTable {
     root_ppn: PhysPageNum,
     frames: Vec<FrameTracker>,
+}
+
+impl Default for PageTable {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Assume that it won't oom when creating/mapping.
@@ -235,6 +242,10 @@ impl UserBuffer {
             total += b.len();
         }
         total
+    }
+    /// is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

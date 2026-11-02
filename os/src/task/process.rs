@@ -49,6 +49,12 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    pub deadlock_detect: bool,
+    pub mutex_allocated: Vec<Vec<usize>>,
+    pub mutex_request: Vec<Option<usize>>,
+    pub semaphore_allocated: Vec<Vec<usize>>,
+    pub semaphore_request: Vec<Option<usize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +87,131 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+
+    pub fn mutex_available(&self) -> Vec<u8> {
+        self.mutex_list
+            .iter()
+            .map(|m| if m.is_some() { 1 } else { 0 })
+            .collect()
+    }
+
+    fn is_task_active(&self, tid: usize) -> bool {
+        self.tasks
+            .get(tid)
+            .map(|task| task.is_some())
+            .unwrap_or(false)
+    }
+
+    pub fn ensure_mutex_sync_state(&mut self, tid: usize) {
+        let task_count = self.tasks.len().max(tid + 1);
+        if self.mutex_request.len() < task_count {
+            self.mutex_request.resize(task_count, None);
+        }
+        while self.mutex_allocated.len() < task_count {
+            self.mutex_allocated.push(Vec::new());
+        }
+        let resource_count = self.mutex_list.len();
+        for row in self.mutex_allocated.iter_mut() {
+            if row.len() < resource_count {
+                row.resize(resource_count, 0);
+            }
+        }
+    }
+
+    pub fn ensure_semaphore_sync_state(&mut self, tid: usize) {
+        let task_count = self.tasks.len().max(tid + 1);
+        if self.semaphore_request.len() < task_count {
+            self.semaphore_request.resize(task_count, None);
+        }
+        while self.semaphore_allocated.len() < task_count {
+            self.semaphore_allocated.push(Vec::new());
+        }
+        let resource_count = self.semaphore_list.len();
+        for row in self.semaphore_allocated.iter_mut() {
+            if row.len() < resource_count {
+                row.resize(resource_count, 0);
+            }
+        }
+    }
+
+    pub fn is_mutex_state_safe(&self) -> bool {
+        let capacities = self.mutex_available();
+        let mut work = Vec::with_capacity(capacities.len());
+        for (id, capacity) in capacities.iter().enumerate() {
+            let allocated: usize = self
+                .mutex_allocated
+                .iter()
+                .enumerate()
+                .filter(|(tid, _)| self.is_task_active(*tid))
+                .map(|(_, row)| row.get(id).copied().unwrap_or(0))
+                .sum();
+            work.push((*capacity as usize).saturating_sub(allocated));
+        }
+        self.is_sync_state_safe(work, &self.mutex_allocated, &self.mutex_request)
+    }
+
+    pub fn is_semaphore_state_safe(&self) -> bool {
+        let work: Vec<usize> = self
+            .semaphore_list
+            .iter()
+            .map(|semaphore| match semaphore {
+                Some(semaphore) => {
+                    let count = semaphore.inner.exclusive_access().count;
+                    if count > 0 {
+                        count as usize
+                    } else {
+                        0
+                    }
+                }
+                None => 0,
+            })
+            .collect();
+        self.is_sync_state_safe(work, &self.semaphore_allocated, &self.semaphore_request)
+    }
+
+    fn is_sync_state_safe(
+        &self,
+        mut work: Vec<usize>,
+        allocated: &[Vec<usize>],
+        request: &[Option<usize>],
+    ) -> bool {
+        let resource_count = work.len();
+        let task_count = self.tasks.len().max(allocated.len()).max(request.len());
+        let mut finish = vec![false; task_count];
+        for (tid, finish) in finish.iter_mut().enumerate() {
+            if !self.is_task_active(tid) {
+                *finish = true;
+            }
+        }
+
+        loop {
+            let mut progressed = false;
+            for (tid, finish) in finish.iter_mut().enumerate() {
+                if *finish {
+                    continue;
+                }
+                let can_finish = match request.get(tid).and_then(|request| *request) {
+                    None => true,
+                    Some(id) => id < resource_count && work[id] > 0,
+                };
+                if !can_finish {
+                    continue;
+                }
+                *finish = true;
+                if let Some(row) = allocated.get(tid) {
+                    for (id, work) in work.iter_mut().enumerate() {
+                        *work += row.get(id).copied().unwrap_or(0);
+                    }
+                }
+                progressed = true;
+            }
+            if !progressed {
+                break;
+            }
+        }
+
+        finish.iter().all(|finished| *finished)
     }
 }
 
@@ -119,6 +250,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allocated: Vec::new(),
+                    mutex_request: Vec::new(),
+                    semaphore_allocated: Vec::new(),
+                    semaphore_request: Vec::new(),
                 })
             },
         });
@@ -245,6 +381,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_allocated: Vec::new(),
+                    mutex_request: Vec::new(),
+                    semaphore_allocated: Vec::new(),
+                    semaphore_request: Vec::new(),
                 })
             },
         });

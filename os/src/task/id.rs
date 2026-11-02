@@ -11,6 +11,7 @@ use alloc::{
 use lazy_static::*;
 
 /// Allocator with a simple recycle strategy
+#[derive(Default)]
 pub struct RecycleAllocator {
     current: usize,
     recycled: Vec<usize>,
